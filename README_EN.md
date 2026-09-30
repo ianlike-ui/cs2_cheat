@@ -1,5 +1,21 @@
 # CS2 External ESP
 
+> [!IMPORTANT]
+> ## Attribution
+>
+> **This repository is a locally modified copy of the original project — NOT original work.**
+>
+> - **Original author:** tiansongyu — <https://github.com/tiansongyu>
+> - **Original repository:** **<https://github.com/tiansongyu/cs2_cheat>**
+>
+> This copy (<https://github.com/ianlike-ui/cs2_cheat>) only reuses the original author's code with local
+> modifications (dual aimbot modes, magic bullet, visual hitbox picker, teleport, per-feature hotkeys, ...).
+> **All original code, design, documentation and licensing belong to the original author.** For the latest
+> version, releases and official support, please use the **original repository**:
+> <https://github.com/tiansongyu/cs2_cheat>.
+
+---
+
 [![Build](https://github.com/tiansongyu/cs2_cheat/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/tiansongyu/cs2_cheat/actions/workflows/build.yaml)
 [![Offsets](https://github.com/tiansongyu/cs2_cheat/actions/workflows/update-files.yml/badge.svg?branch=main)](https://github.com/tiansongyu/cs2_cheat/actions/workflows/update-files.yml)
 [![License](https://img.shields.io/github/license/tiansongyu/cs2_cheat)](LICENSE)

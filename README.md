@@ -1,5 +1,24 @@
 # CS2 External ESP
 
+> [!IMPORTANT]
+> ## 来源声明 / Attribution
+>
+> **本仓库是对原作者项目的本地修改副本，不是原创项目。**
+> **This repository is a locally modified copy of the original project — NOT original work.**
+>
+> - **原作者 / Original author:** tiansongyu — <https://github.com/tiansongyu>
+> - **原仓库 / Original repository:** **<https://github.com/tiansongyu/cs2_cheat>**
+>
+> 本仓库 <https://github.com/ianlike-ui/cs2_cheat> 只是借用了原作者的代码，并在其基础上做了本地修改
+> （自瞄双模式、魔法子弹、可视化命中部位选择、瞬移、各功能热键等）。**全部原始代码、设计、文档与版权均归原作者所有。**
+> 请以**原仓库** <https://github.com/tiansongyu/cs2_cheat> 为准获取最新版本、发布包与正式支持。
+>
+> This copy is for local use only, built upon the original author's code. All original code, design,
+> documentation and licensing belong to the original author. For the latest version, releases and
+> official support, please use the **original repository**: <https://github.com/tiansongyu/cs2_cheat>.
+
+---
+
 [![Build](https://github.com/tiansongyu/cs2_cheat/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/tiansongyu/cs2_cheat/actions/workflows/build.yaml)
 [![Offsets](https://github.com/tiansongyu/cs2_cheat/actions/workflows/update-files.yml/badge.svg?branch=main)](https://github.com/tiansongyu/cs2_cheat/actions/workflows/update-files.yml)
 [![License](https://img.shields.io/github/license/tiansongyu/cs2_cheat)](LICENSE)
