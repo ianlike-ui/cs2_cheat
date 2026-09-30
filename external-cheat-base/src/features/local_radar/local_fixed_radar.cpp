@@ -1,3 +1,18 @@
+// ============================================================================
+// local_fixed_radar.cpp —— 游戏内叠加的"固定全地图雷达"实现
+//
+// 【这个文件是干什么的】
+// 1. 用 Windows 图片组件（WIC）把地图 PNG 解码成 SDL 纹理（只解码一次，缓存复用）；
+// 2. 用 ImGui 绘制地图背景 + 玩家标记（三角形箭头表示朝向、圆点表示位置、
+//    X 表示死亡、菱形 C4 图标）+ 地图标题栏 + STALE 状态提示；
+// 3. 多层地图（Nuke 等）根据参考高度切换楼层图，并给上下层的玩家加 v/^ 标记。
+//
+// 【缓存设计】
+// 最多缓存 4 张地图纹理，按"最近使用"淘汰（LRU）。渲染器重建（如显卡重置）
+// 时旧纹理句柄会失效，用 rendererRevision 版本号检测并整体清空缓存。
+// 加载失败会记录错误并 2 秒后重试，避免一帧一帧地反复解码浪费 CPU。
+// ============================================================================
+
 #include "features/local_radar/local_fixed_radar.hpp"
 
 #include "core/game/fixed_map_catalog.hpp"
@@ -25,13 +40,20 @@
 
 namespace
 {
-    constexpr std::uint64_t MAX_PNG_FILE_BYTES = 16U * 1024U * 1024U;
-    constexpr std::uint64_t MAX_DECODED_BYTES = 64U * 1024U * 1024U;
-    constexpr UINT MAX_TEXTURE_DIMENSION = 4096;
-    constexpr UINT RADAR_TEXTURE_DIMENSION = 1024;
-    constexpr std::uint64_t STALE_AFTER_MILLISECONDS = 1500;
-    constexpr std::size_t MAX_CACHED_RADAR_TEXTURES = 4;
+    // 各种限制常量（防恶意/损坏的地图文件把程序搞挂）
+    constexpr std::uint64_t MAX_PNG_FILE_BYTES = 16U * 1024U * 1024U;   // PNG 文件最大 16MB
+    constexpr std::uint64_t MAX_DECODED_BYTES = 64U * 1024U * 1024U;    // 解码后最大 64MB
+    constexpr UINT MAX_TEXTURE_DIMENSION = 4096;                        // 图片最大边长
+    constexpr UINT RADAR_TEXTURE_DIMENSION = 1024;                      // 雷达图必须是 1024x1024
+    constexpr std::uint64_t STALE_AFTER_MILLISECONDS = 1500;            // 快照超过 1.5 秒算"过期"
+    constexpr std::size_t MAX_CACHED_RADAR_TEXTURES = 4;                // 最多缓存 4 张图
 
+    // ------------------------------------------------------------------
+    // ComObject：Windows COM 接口指针的自动释放器（RAII）
+    // ------------------------------------------------------------------
+    // COM 是 Windows 的组件模型。COM 对象用完后必须调用 Release()，
+    // 这个模板类保证：对象销毁时自动 Release()，防止内存/引用泄漏。
+    // 和 std::unique_ptr 的作用类似，只是释放方式是 Release() 而不是 delete。
     template <typename Interface>
     class ComObject final
     {
@@ -42,20 +64,22 @@ namespace
             reset();
         }
 
-        ComObject(const ComObject&) = delete;
+        ComObject(const ComObject&) = delete;             // 禁止复制
         ComObject& operator=(const ComObject&) = delete;
 
-        [[nodiscard]] Interface* get() const noexcept
+        [[nodiscard]] Interface* get() const noexcept    // 取原始指针
         {
             return value_;
         }
 
+        // 给 COM 创建函数用的"输出参数"（返回指针的指针）
         [[nodiscard]] Interface** receive() noexcept
         {
             reset();
             return &value_;
         }
 
+        // 释放持有的 COM 对象
         void reset() noexcept
         {
             if (value_) {
@@ -68,6 +92,11 @@ namespace
         Interface* value_ = nullptr;
     };
 
+    // ------------------------------------------------------------------
+    // ScopedComInitialization：COM 库的初始化/反初始化（RAII）
+    // ------------------------------------------------------------------
+    // 使用 WIC 前需要先调用 CoInitializeEx，用完后 CoUninitialize。
+    // 这个类把这两个调用绑定到对象生命周期，自动成对调用。
     class ScopedComInitialization final
     {
     public:
@@ -84,10 +113,11 @@ namespace
             }
         }
 
+        // COM 对象是否可用：
+        // 如果本线程已经用别的公寓模型初始化过（RPC_E_CHANGED_MODE），
+        // COM 对象仍然可用（只是模式不同），所以这里也算"可用"。
         [[nodiscard]] bool usable() const noexcept
         {
-            // COM objects remain usable when another apartment model was
-            // already selected for this thread.
             return SUCCEEDED(result_) || result_ == RPC_E_CHANGED_MODE;
         }
 
@@ -96,28 +126,30 @@ namespace
         bool ownsInitialization_{};
     };
 
+    // 纹理缓存里的一条记录
     struct TextureCacheEntry
     {
-        SDL_Texture* texture = nullptr;
-        std::string imagePath;
-        std::string error;
-        std::chrono::steady_clock::time_point retryAfter{};
-        std::uint64_t lastUsed = 0;
+        SDL_Texture* texture = nullptr;              // 已解码的纹理（为空表示还没成功）
+        std::string imagePath;                       // 图片路径（缓存键）
+        std::string error;                           // 上次加载的错误信息
+        std::chrono::steady_clock::time_point retryAfter{};  // 允许重试的时间点
+        std::uint64_t lastUsed = 0;                  // 最近使用序号（LRU 淘汰用）
     };
 
+    // 整个纹理缓存
     struct TextureCache
     {
-        std::uint64_t rendererRevision = 0;
-        std::uint64_t usageSerial = 0;
-        std::vector<TextureCacheEntry> entries;
-        // The render path displays only the error for the image requested in
-        // the current frame; failures cached for other floors remain isolated.
+        std::uint64_t rendererRevision = 0;          // 渲染器版本号（变了就清缓存）
+        std::uint64_t usageSerial = 0;               // 全局使用序号（递增）
+        std::vector<TextureCacheEntry> entries;      // 缓存条目
+        // 当前帧只显示"当前请求的图片"的错误信息；
+        // 其他楼层缓存的失败互不干扰。
         std::string error;
     };
 
-    TextureCache textureCache;
-    std::string selectedLevelMapId;
-    std::optional<std::size_t> selectedLevelIndex;
+    TextureCache textureCache;                       // 全局纹理缓存
+    std::string selectedLevelMapId;                  // 当前选层的所属地图 ID
+    std::optional<std::size_t> selectedLevelIndex;   // 当前选中的楼层
 
     std::filesystem::path executableDirectory()
     {
@@ -146,6 +178,13 @@ namespace
             std::filesystem::path(wideRelative);
     }
 
+    // ------------------------------------------------------------------
+    // loadPngTexture：把一张地图 PNG 解码成 SDL 纹理
+    // ------------------------------------------------------------------
+    // 流程：检查文件存在/大小 → 初始化 COM → 用 WIC 创建解码器 →
+    // 取第一帧 → 校验尺寸（必须 1024x1024）→ 转成 RGBA 像素 →
+    // 上传成 SDL 纹理。全程都有大小上限检查（防异常文件）。
+    // 注意：WIC 是 Windows 自带的图片解码组件，比引入第三方图片库更省事。
     SDL_Texture* loadPngTexture(
         SDL_Renderer* renderer,
         const std::filesystem::path& path,
@@ -286,6 +325,9 @@ namespace
         return texture;
     }
 
+    // ------------------------------------------------------------------
+    // textureForImage：按图片路径取纹理（带缓存和 LRU 淘汰）
+    // ------------------------------------------------------------------
     SDL_Texture* textureForImage(const std::string_view imagePath)
     {
         const std::uint64_t revision =
@@ -364,6 +406,8 @@ namespace
             (static_cast<ImU32>(alpha) << IM_COL32_A_SHIFT);
     }
 
+    // 玩家标记的颜色：优先用竞技模式的队伍颜色（1~6 号），
+    // 没有就用默认的 CT 蓝 / T 黄 / 灰色
     ImU32 playerColor(const game::PlayerSnapshot& player)
     {
         static constexpr std::array<ImU32, 6> competitivePalette{
@@ -537,6 +581,14 @@ namespace
     }
 }
 
+// ----------------------------------------------------------------------------
+// local_fixed_radar::render：渲染一整帧雷达（必须由渲染线程调用）
+// ----------------------------------------------------------------------------
+// 流程：
+//   1. 计算雷达矩形在屏幕上的位置（按配置的比例和锚点）；
+//   2. 画黑色背景 → 加载地图纹理并画上去（没有地图/图片则显示提示文字）；
+//   3. 遍历玩家：投影到雷达坐标 → 按存活/死亡/休眠画不同标记（带朝向箭头）；
+//   4. 画 C4 标记、顶部标题栏（地图名 + STALE 提示）、外框。
 void local_fixed_radar::render(
     const game::GameSnapshot& snapshot,
     const RenderConfig& config)
@@ -573,8 +625,8 @@ void local_fixed_radar::render(
             drawList,
             minimum,
             maximum,
-            "WAITING FOR MAP",
-            "Game snapshot is not connected");
+            "等待地图",
+            "游戏快照尚未连接");
         drawList->AddRect(
             minimum,
             maximum,
@@ -586,7 +638,7 @@ void local_fixed_radar::render(
             drawList,
             minimum,
             maximum,
-            "MAP NOT AVAILABLE",
+            "地图不可用",
             snapshot.map.id);
         drawList->AddRect(
             minimum,
@@ -765,6 +817,7 @@ void local_fixed_radar::render(
         1.5f);
 }
 
+// 释放地图纹理缓存（在渲染器销毁前调用，防止悬空指针）
 void local_fixed_radar::reset() noexcept
 {
     if (textureCache.rendererRevision ==

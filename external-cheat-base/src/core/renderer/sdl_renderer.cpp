@@ -1,3 +1,33 @@
+// ============================================================================
+// sdl_renderer.cpp —— 覆盖层渲染模块的实现（SDL2 + ImGui）
+//
+// 【这个文件是干什么的】
+// 1. 创建一个"透明覆盖层窗口"叠在游戏窗口上（本文件最核心的工程点）；
+// 2. 让鼠标只在菜单区域生效、其余区域"穿透"到游戏（点击穿透）；
+// 3. 跟随游戏窗口移动/缩放/换显示器，并自动识别游戏画面区域（视口）；
+// 4. 初始化 ImGui、处理键盘事件（F4 菜单 / F9 退出）、提供画线/画框函数。
+//
+// 【透明覆盖层的实现原理（重点）】
+// 窗口用了 Windows 的"分层窗口 + 颜色键"技巧：
+//   - 把窗口背景刷成一种特殊颜色（RGB(1,0,1)，几乎黑色但不是纯黑）；
+//   - 调用 SetLayeredWindowAttributes 把这种颜色设为"透明"；
+//   - 结果：窗口里除了这种颜色以外的地方都显示，这个颜色处完全透明。
+//   这样 ESP 画的线/框能看到，窗口其他区域不遮游戏。选 RGB(1,0,1)
+//   而不是纯黑，是为了把纯黑留给 ImGui 的背景/描边/文字使用。
+//   代价是做不到"真半透明"（见 initImGui 里注释），所以菜单是纯不透明的。
+//
+// 【DPI 处理】
+// 程序声明自己"每个显示器分别感知 DPI"（per-monitor DPI aware v2），
+// 让 SDL 和 Win32 使用同一套物理像素坐标——否则副屏缩放比例不同时，
+// ESP 画的位置会错位。
+//
+// 【给 C++ 初学者的概念】
+// - HWND：Windows 窗口的句柄（身份证号）。
+// - WNDPROC：窗口消息处理函数（Windows 把鼠标点击等事件"发消息"给它）。
+// - std::atomic：多线程共享的变量。
+// - 匿名命名空间 namespace { }：本文件私有。
+// ============================================================================
+
 #include "sdl_renderer.h"
 #include <dwmapi.h>
 #include "imgui.h"
@@ -26,6 +56,47 @@ namespace
     constexpr COLORREF TRANSPARENCY_COLOR_KEY =
         RGB(TRANSPARENCY_KEY_R, TRANSPARENCY_KEY_G, TRANSPARENCY_KEY_B);
     constexpr float BASE_FONT_SIZE = 18.0f;
+
+    // ------------------------------------------------------------------
+    // addCjkFallbackFont：把系统中文字体合并进 ImGui 字体图集
+    // ------------------------------------------------------------------
+    // ImGui 默认字体只含拉丁字形，没有中文字符——中文 UI 会全部渲染成问号。
+    // 这里把系统中的中文字体（微软雅黑优先，依次回退黑体/宋体/等线）以
+    // MergeMode 合入默认字体：拉丁字符仍走默认字形，CJK 区段走中文字体。
+    // 找不到任何中文字体时静默跳过（此时 UI 保持英文/回退默认字形）。
+    void addCjkFallbackFont(ImFontAtlas* atlas, const ImFontConfig& baseConfig)
+    {
+        // 需要合入的区段：CJK 表意文字、CJK 标点、全角形式、通用标点（… —）、
+        // 数学符号（≠、−）、箭头（→）。拉丁字母与 °±× 由默认字体覆盖。
+        static const ImWchar kCjkRanges[] = {
+            0x2000, 0x206F,   // 通用标点
+            0x2190, 0x21FF,   // 箭头
+            0x2200, 0x22FF,   // 数学符号（≠、−）
+            0x3000, 0x303F,   // CJK 标点
+            0x4E00, 0x9FFF,   // CJK 统一表意文字
+            0xFF00, 0xFFEF,   // 全角形式
+            0
+        };
+        const char* const kFontCandidates[] = {
+            "C:\\Windows\\Fonts\\msyh.ttc",   // 微软雅黑
+            "C:\\Windows\\Fonts\\msyhbd.ttc", // 微软雅黑 Bold
+            "C:\\Windows\\Fonts\\simhei.ttf", // 黑体
+            "C:\\Windows\\Fonts\\simsun.ttc", // 宋体
+            "C:\\Windows\\Fonts\\Deng.ttf"    // 等线
+        };
+        for (const char* path : kFontCandidates) {
+            ImFontConfig merged = baseConfig;
+            merged.MergeMode = true;                 // 合入默认字体（不是新建独立字体）
+            merged.GlyphOffset.y = 1.0f;             // 与默认字体基线微调对齐
+            if (atlas->AddFontFromFileTTF(
+                    path,
+                    baseConfig.SizePixels,
+                    &merged,
+                    kCjkRanges)) {
+                break;
+            }
+        }
+    }
 
     struct GameDisplayGeometry
     {
@@ -162,6 +233,15 @@ namespace
         return pressed;
     }
 
+    // ------------------------------------------------------------------
+    // findProcessWindow：EnumWindows 的回调——为每个窗口打分，挑出游戏主窗口
+    // ------------------------------------------------------------------
+    // EnumWindows 会遍历屏幕上所有顶层窗口，对每个窗口调用一次这个函数。
+    // 打分规则（见函数内）：
+    //   标题完全匹配 → 加超大权重（2^62）；可见 → 加较大权重（2^61）；
+    //   面积大 → 加分。分数最高的窗口就是游戏主窗口。
+    // 之所以这么复杂，是因为 cs2.exe 进程名下可能有好几个窗口（设置界面、
+    // 控制台等），要挑出真正的主游戏窗口。
     BOOL CALLBACK findProcessWindow(HWND hwnd, LPARAM parameter)
     {
         auto* context = reinterpret_cast<WindowSearchContext*>(parameter);
@@ -371,6 +451,16 @@ namespace
             static_cast<float>(SAMPLE_COUNT);
     }
 
+    // ------------------------------------------------------------------
+    // 视口自动检测：截图采样判断"黑边"
+    // ------------------------------------------------------------------
+    // 有些玩家用 4:3 拉伸或非原生分辨率，游戏画面四周会有黑边。
+    // ESP 如果按整个窗口画就会偏移。所以：
+    //   1. captureClientSample：把游戏画面缩小截图（省内存，最多 320x180）；
+    //   2. detectContentViewport：逐行/逐列统计"黑色像素比例"，
+    //      连续很黑的边缘就是黑边，据此算出真正画面区域（视口）。
+    // 由于截图较慢，这段逻辑放在一个后台线程跑（见 queueViewportDetection 等），
+    // 不阻塞渲染线程。
     ContentViewport detectContentViewport(const RECT& clientScreenRect)
     {
         const int width = rectWidth(clientScreenRect);
@@ -582,6 +672,12 @@ namespace
     // Keep SDL and Win32 in the same physical-pixel coordinate system. This is
     // especially important when the game is on a monitor whose scale differs
     // from the primary monitor.
+    // ------------------------------------------------------------------
+    // configureVideoHints：设置 DPI 感知模式（高分屏适配的关键）
+    // ------------------------------------------------------------------
+    // 声明"按显示器感知 DPI"（per-monitor v2），并强制 SDL 用同一套物理像素，
+    // 让覆盖层坐标与游戏窗口坐标一致。函数在 user32.dll 里动态查找 API
+    // （loadFunction），因为老系统可能没有这些函数，动态查找可以优雅降级。
     bool configureVideoHints()
     {
         using SetProcessDpiAwarenessContextFn =
@@ -916,6 +1012,14 @@ namespace
             : DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
+    // ------------------------------------------------------------------
+    // configureOverlayWindow：把 SDL 窗口改造成"透明覆盖层窗口"
+    // ------------------------------------------------------------------
+    // 1. 加扩展样式：WS_EX_LAYERED（分层窗口）+ WS_EX_TOPMOST（总在最前）
+    //    + WS_EX_TOOLWINDOW（不出现任务栏图标）；
+    // 2. 挂自定义窗口消息处理函数 overlayWindowProc（用于点击穿透）；
+    // 3. 用颜色键透明（把 RGB(1,0,1) 设为透明色）；
+    // 4. DwmExtendFrameIntoClientArea 让窗口内容能延伸到客户区边缘。
     bool configureOverlayWindow(HWND hwnd)
     {
         if (!hwnd) {
@@ -1090,6 +1194,37 @@ namespace
     }
 }
 
+// ----------------------------------------------------------------------------
+// 🎓 概念卡 ㉒：SDL2 三件套（窗口 Window、渲染器 Renderer、事件 Event）
+// ----------------------------------------------------------------------------
+// 【是什么】SDL2 是一个跨平台的多媒体库，做窗口/绘图/输入非常省事。
+// 用它的三个核心概念：
+//   1. SDL_Window（窗口）：屏幕上的一块区域，可以设无边框、置顶、透明；
+//   2. SDL_Renderer（渲染器）：往窗口里"画画"的工具（负责 GPU/CPU 绘制）；
+//   3. SDL_Event（事件）：鼠标、键盘、窗口变化等系统消息，用 SDL_PollEvent
+//      一帧一帧地取出来处理。
+// 【为什么在这里】本项目的"覆盖层"就是：一个透明窗口（SDL_CreateWindow）+
+// 一个渲染器（SDL_CreateRenderer）+ 每帧 pollEvents→beginFrame→画→endFrame
+// 的事件循环。窗口能叠在游戏上并穿透鼠标，是后续所有画面的地基。
+// 【最小示例（画一个白色矩形）】
+//   SDL_Window* w = SDL_CreateWindow("t", 0,0, 640,480, 0);
+//   SDL_Renderer* r = SDL_CreateRenderer(w, -1, SDL_RENDERER_ACCELERATED);
+//   SDL_SetRenderDrawColor(r, 255,255,255,255);   // 白色
+//   SDL_Rect rect{10,10,100,100};
+//   SDL_RenderFillRect(r, &rect);                  // 填充矩形
+//   SDL_RenderPresent(r);                          // 显示到屏幕
+// 【自己动手要点】
+// 1) 渲染器的"坐标原点"在窗口左上角，x 向右、y 向下（和数学课相反）；
+// 2) 每帧都要：清屏（RenderClear）→ 画 → 显示（RenderPresent）；
+// 3) 事件处理里记得把 SDL 事件转发给 ImGui（ImGui_ImplSDL2_ProcessEvent），
+//    否则菜单点不动（本项目 pollEvents 里就是这么做的）。
+// ----------------------------------------------------------------------------
+
+// ----------------------------------------------------------------------------
+// initWaiting：初始化"等待界面"（还没找到游戏时显示的窗口）
+// ----------------------------------------------------------------------------
+// 在鼠标当前所在的显示器上创建一个全屏无边框窗口，显示等待动画。
+// 先配置 DPI → 初始化 SDL → 找鼠标所在显示器 → 创建窗口 → 配透明样式。
 // Initialize the waiting screen on the display the user is currently using.
 bool sdl_renderer::initWaiting()
 {
@@ -1182,6 +1317,12 @@ bool sdl_renderer::initWaiting()
     return true;
 }
 
+// ----------------------------------------------------------------------------
+// sdl_renderer::init：初始化覆盖层（游戏已找到）
+// ----------------------------------------------------------------------------
+// 流程：配 DPI → 找游戏主窗口 → 拿到它的位置/尺寸/所在显示器 →
+// 在游戏窗口正上方创建一个同样大小、无边框、置顶的窗口 → 配置透明样式 →
+// 启动"视口检测后台线程"→ 显示窗口。
 bool sdl_renderer::init(
     const wchar_t* targetWindowName,
     DWORD targetProcessId)
@@ -1274,6 +1415,9 @@ bool sdl_renderer::init(
     return true;
 }
 
+// ----------------------------------------------------------------------------
+// sdl_renderer::destroy：销毁覆盖层并复位所有状态（游戏断开或退出时）
+// ----------------------------------------------------------------------------
 void sdl_renderer::destroy()
 {
     stopViewportDetectionWorker();
@@ -1311,6 +1455,12 @@ void sdl_renderer::destroy()
     SDL_Quit();
 }
 
+// ----------------------------------------------------------------------------
+// sdl_renderer::beginFrame：开始一帧
+// ----------------------------------------------------------------------------
+// 把整帧画面清成"透明键色"（RGB(1,0,1)），这样覆盖层窗口就会全部透明。
+// 之后画上去的内容（ESP、菜单）会覆盖在这个颜色上显示出来。
+// 如果渲染器失效（显卡重置等）会自动尝试恢复（recoverRenderer）。
 bool sdl_renderer::beginFrame()
 {
     if (!renderer && !recoverRenderer()) {
@@ -1343,6 +1493,14 @@ void sdl_renderer::endFrame()
     SDL_RenderPresent(renderer);
 }
 
+// ----------------------------------------------------------------------------
+// sdl_renderer::pollEvents：处理窗口事件和全局热键
+// ----------------------------------------------------------------------------
+// 1. 把 SDL 事件喂给 ImGui（否则菜单点不了）；
+// 2. F9 退出、F4 开关菜单（用 GetAsyncKeyState 检测，见 consumeAsyncKeyPress）；
+// 3. 菜单显示时，覆盖层拦截鼠标；隐藏时设置"点击穿透"（setClickThrough），
+//    鼠标直接点到游戏上。
+// 设计细节：菜单隐藏后把焦点还给游戏窗口；绑定热键期间屏蔽全局热键。
 void sdl_renderer::pollEvents()
 {
     static AsyncKeyTracker exitKeyTracker{};
@@ -1431,6 +1589,17 @@ void sdl_renderer::pollEvents()
     }
 }
 
+// ----------------------------------------------------------------------------
+// sdl_renderer::updateWindowPosition：每一帧都调用，让覆盖层紧跟游戏窗口
+// ----------------------------------------------------------------------------
+// 职责：
+//   1. 游戏窗口不见了/最小化/跨显示器 → 隐藏覆盖层并暂停；
+//   2. 游戏窗口移动/缩放 → 把覆盖层 SetWindowPos 到同样的位置和大小；
+//   3. 定期重新确认"置顶"状态（防止被其他窗口盖住）；
+//   4. 视口模式为"自动"时，后台线程定期截图检测黑边并更新视口；
+//   5. 按显示器刷新率更新目标帧率、按 DPI 缩放 ImGui。
+// 注意：游戏窗口矩形才是覆盖层矩形（不用显示器分辨率），否则 ESP 会被
+// 不均匀缩放变形（代码里有专门注释说明这点）。
 void sdl_renderer::updateWindowPosition()
 {
     if (!gameHwnd || !overlayHwnd) return;
@@ -1724,6 +1893,7 @@ uint64_t sdl_renderer::getRendererRevision()
     return rendererRevision.load(std::memory_order_relaxed);
 }
 
+// 基础绘图函数：ESP 画框/画线用的几个 SDL 封装
 void sdl_renderer::draw::line(int x1, int y1, int x2, int y2, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
     SDL_SetRenderDrawColor(renderer, r, g, b, a);
@@ -1747,6 +1917,15 @@ void sdl_renderer::draw::filledBox(int x, int y, int w, int h, uint8_t r, uint8_
     SDL_RenderFillRect(renderer, &rect);
 }
 
+// ----------------------------------------------------------------------------
+// sdl_renderer::initImGui：初始化 ImGui（界面库）
+// ----------------------------------------------------------------------------
+// 1. 创建 ImGui 上下文；
+// 2. 设置深色主题配色（窗口/按钮/文字等颜色）；
+// 3. 记录一份"基准样式"，之后按 DPI 缩放时始终从基准缩放（避免反复缩放漂移）；
+// 4. 用 SDL 渲染器后端初始化 ImGui。
+// 注意：因为覆盖层是"颜色键"透明（不是真 alpha 透明），菜单必须完全不透明
+// （style.Alpha = 1.0f），否则会和透明键混色产生暗色光晕。
 bool sdl_renderer::initImGui()
 {
     IMGUI_CHECKVERSION();
@@ -1759,6 +1938,8 @@ bool sdl_renderer::initImGui()
     fontConfig.OversampleH = 1;
     fontConfig.OversampleV = 1;
     io.Fonts->AddFontDefaultVector(&fontConfig);
+    // 合入中文字体，否则中文 UI 会显示成问号
+    addCjkFallbackFont(io.Fonts, fontConfig);
 
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();

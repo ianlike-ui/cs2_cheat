@@ -1,3 +1,19 @@
+// ============================================================================
+// public_relay_producer.cpp —— 公网中继"生产端"的实现（WinHTTP 出站 WSS）
+//
+// 【这个文件是干什么的】
+// 用 Windows 自带的 WinHTTP 库建立一条 wss:// 出站 WebSocket 连接，
+// 把雷达快照推给 relay 服务器（Producer 角色）。程序只"往外连"，
+// 游戏电脑不开放任何入站端口。
+//
+// 【关键设计（详见代码内注释）】
+// - 所有网络工作隔离在一个后台线程，publish() 只是把最新帧放进槽位；
+// - 发送快过网络时只保留最新一帧（丢旧帧，不排队）；
+// - 失败按指数退避重连（见 public_relay_config.hpp），HTTP 4xx 认证类
+//   错误视为"永久失败"（需要用户改配置），网络瞬时错误自动重试；
+// - requestStop() 只发信号（UI 线程安全），stop() 等网络线程收尾。
+// ============================================================================
+
 #include "public_relay_producer.hpp"
 
 #ifndef NOMINMAX
@@ -21,6 +37,9 @@ namespace web_radar
 {
     namespace
     {
+        // InternetHandle：WinHTTP 句柄的 RAII 包装（自动关闭）。
+        // WinHTTP 的每个连接/请求都是一个 HINTERNET 句柄，
+        // 用完必须 WinHttpCloseHandle，这个类保证自动关闭。
         class InternetHandle final
         {
         public:

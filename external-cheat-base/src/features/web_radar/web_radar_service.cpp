@@ -1,3 +1,24 @@
+// ============================================================================
+// web_radar_service.cpp —— 内嵌网页雷达服务的实现（CivetWeb）
+//
+// 【这个文件是干什么的】
+// 用 CivetWeb（一个嵌入式 C/C++ Web 服务器库）在程序里起一个
+// HTTP + WebSocket 服务：
+//   - GET /           → 返回网页雷达前端（web-radar/dist 里的静态文件）
+//   - GET /api/v1/stream?token=xxx → WebSocket 实时推送雷达快照
+//   - GET /api/v1/status → 服务状态（给调试用）
+//
+// 【关键设计（详见代码内注释）】
+// - 每个观众连接校验 token（常量时间比较，防时序攻击）；
+// - 每个观众只有"一个可替换的最新快照"槽位：慢观众丢旧帧而不是排队；
+// - 发布（publish）从不阻塞：只是把新快照放进各观众槽位；
+// - 静态文件安全：路径越界检查、隐藏路径拒绝、hash 资源长缓存。
+//
+// 【PImpl 模式】
+// 类内部用一个 Impl 持有所有成员（CivetWeb 回调、观众状态、线程），
+// 把实现细节完全藏在 .cpp 里，头文件只需一个不透明指针。
+// ============================================================================
+
 #include "web_radar_service.hpp"
 
 #include <CivetServer.h>
@@ -825,6 +846,10 @@ namespace web_radar
         Snapshot latestSnapshot_;
         std::uint64_t publishedGeneration_ = 0;
     };
+
+    // ------------------------------------------------------------------
+    // WebRadarService 的公开 API（真正干活的是上面的 Impl）
+    // ------------------------------------------------------------------
 
     WebRadarService::WebRadarService(WebRadarConfig config)
         : impl_(std::make_unique<Impl>(std::move(config)))

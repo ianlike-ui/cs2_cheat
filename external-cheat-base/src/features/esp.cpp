@@ -1,3 +1,25 @@
+// ============================================================================
+// esp.cpp —— ESP 模块的实现（整个程序最核心的"读内存 + 建模"部分）
+//
+// 【这个文件负责什么】
+// 1. init()：找到 cs2.exe 进程和 client.dll 基地址；
+// 2. refreshEntityCache()：遍历实体列表，把每个玩家的关键信息读出来，
+//    缓存成 CachedPawn 列表（玩家名、队伍、血量、武器、背包、SteamID…）；
+// 3. updateEntities()：读实体位置/血量/骨骼/视角矩阵等高频数据，生成：
+//    - enemies（敌人快照，渲染线程画 ESP 用）
+//    - worldEntities（投掷物、掉落武器）
+//    - gameSnapshot（完整快照，网页雷达/中继/录制共用）
+//    - bombInfo（C4 状态）、localPlayer（本地玩家缓存）
+// 4. render()：把敌人画成方框/血条/骨骼等（渲染线程调用）。
+//
+// 【地址是怎么来的】
+// 所有偏移量（比如 C_BasePlayerPawn::m_vOldOrigin）都来自 cs2-dumper
+// 生成的 client_dll.hpp / offsets.hpp，程序只负责"基地址 + 偏移"去读。
+//
+// 【多线程约定】
+// 数据线程只写快照（换新的 shared_ptr），渲染线程只读快照，加锁保护。
+// ============================================================================
+
 #include "esp.hpp"
 #include "menu.hpp"
 #include "utils/weapon_names.hpp"
@@ -6,6 +28,7 @@
 #include "core/renderer/viewport_math.hpp"
 #include "core/runtime_timing.hpp"
 #include "imgui.h"
+#include "features/aimbot.hpp"   // 压枪/弹道录制状态提示
 #include <iostream>
 #include <cmath>
 #include <algorithm>  // For std::min
@@ -103,6 +126,32 @@ namespace
         return hasNonZeroValue;
     }
 
+    // ------------------------------------------------------------------
+    // entityAddress：根据实体编号（index）算出它在内存里的地址
+    // ------------------------------------------------------------------
+    // 🎓 概念卡 ⑱：位运算（& 掩码、>> 移位）——从整数里拆信息
+    // ------------------------------------------------------------------
+    // 【是什么】整数在计算机里是二进制位。位运算直接操作这些位：
+    //   a & b  按位与（两个位都是 1 结果才是 1）→ 常用来"取出某些位"（掩码）
+    //   a >> n 右移 n 位（相当于除以 2ⁿ）→ 常用来"丢弃低位"
+    // 【为什么在这里】CS2 的实体编号（entity index）是一个整数，
+    // 它同时编码了两条信息：
+    //   高 7 位（右移 9 位后）= 它在实体列表的"第几块"（chunk）；
+    //   低 9 位（& 0x1FF）= 它在块内的第几个。
+    // 所以：
+    //   index >> 9            → 块号
+    //   index & 0x1FF         → 块内序号
+    // 再用 块号×8字节 找到"块指针"，加 块内序号×每实体大小 找到实体地址。
+    // 这是"把两个数塞进一个整数"的经典空间压缩手法（节省内存）。
+    // 【最小示例】
+    //   int x = 0b1010;              // 二进制 1010 = 10
+    //   (x & 0b0110) == 0b0010;      // 只取中间两位
+    //   (x >> 2) == 0b0010;          // 去掉低两位
+    // 【自己动手要点】
+    // 1) & (2ⁿ-1) 等价于"取低 n 位"，>> n 等价于"丢掉低 n 位"；
+    // 2) 掩码先写 16 进制更直观：0x1FF = 512-1 = 低 9 位全 1；
+    // 3) 这类"魔数"一定要配注释（本项目的 game_layout.hpp 就集中管理了它们）。
+    // ------------------------------------------------------------------
     uintptr_t entityAddress(
         uintptr_t entityList,
         uint32_t index)
@@ -414,25 +463,35 @@ namespace
     }
 }
 
+// ----------------------------------------------------------------------------
+// esp::init：初始化（找到游戏进程和 client.dll）
+// ----------------------------------------------------------------------------
+// 进程名固定是 cs2.exe。找到后记下进程 ID 和 client.dll 基地址，
+// 后续所有偏移都要"基地址 + 偏移量"来算实际地址。
 bool esp::init()
 {
     pID = memory::GetProcID(L"cs2.exe");
     if (!pID) {
-        std::cout << "ERROR: Cannot find cs2.exe process!" << std::endl;
+        std::cout << "错误：找不到 cs2.exe 进程！" << std::endl;
         return false;
     }
-    std::cout << "Found cs2.exe, PID: " << pID << std::endl;
+    std::cout << "已找到 cs2.exe，PID：" << pID << std::endl;
 
     modBase = memory::GetModuleBaseAddress(pID, L"client.dll");
     if (!modBase) {
-        std::cout << "ERROR: Cannot find client.dll!" << std::endl;
+        std::cout << "错误：找不到 client.dll！" << std::endl;
         return false;
     }
-    std::cout << "client.dll base: 0x" << std::hex << modBase << std::dec << std::endl;
+    std::cout << "client.dll 基址：0x" << std::hex << modBase << std::dec << std::endl;
 
     return true;
 }
 
+// ----------------------------------------------------------------------------
+// esp::clearRuntimeState：清空所有运行时状态（游戏断开/失焦时调用）
+// ----------------------------------------------------------------------------
+// 把各快照换成"空快照"，并发布一帧"已断开"的 GameSnapshot，
+// 让网页雷达知道没有数据了。
 void esp::clearRuntimeState()
 {
     std::lock_guard<std::mutex> lock(dataMutex);
@@ -479,6 +538,17 @@ esp::GameSnapshot esp::getGameSnapshot()
     return gameSnapshot;
 }
 
+// ----------------------------------------------------------------------------
+// esp::refreshEntityCache：刷新玩家缓存（遍历实体列表）
+// ----------------------------------------------------------------------------
+// 核心流程：
+//   1. 读实体列表基地址 + 本地玩家实体地址 + 自己的队伍；
+//   2. 遍历编号 1~64 的"玩家控制器"（最多 64 个玩家槽位）：
+//      - 从控制器读存活状态、玩家实体句柄；
+//      - 由句柄算出玩家实体的实际地址；
+//      - 读队伍、名字、SteamID、护甲、金钱、头盔、拆弹钳、武器等；
+//   3. 结果放进 cachedPawns（本帧的缓存，后续读高频字段直接用）。
+// 注意：雷达模式开启时会额外读背包武器列表；ESP 武器显示也会读武器。
 void esp::refreshEntityCache(const menu::RuntimeConfig& config)
 {
     const uintptr_t entityList = memory::Read<uintptr_t>(
@@ -594,7 +664,7 @@ void esp::refreshEntityCache(const menu::RuntimeConfig& config)
             cp.playerId = game::makeOpaquePlayerId(i);
             cp.playerName = readPlayerName(entityController);
             if (cp.playerName.empty()) {
-                cp.playerName = "Player " + std::to_string(i);
+                cp.playerName = "玩家 " + std::to_string(i);
             }
             memory::TryRead(
                 entityController +
@@ -702,8 +772,15 @@ void esp::refreshEntityCache(const menu::RuntimeConfig& config)
     cachedPawns = std::move(newCache);
 }
 
+// ----------------------------------------------------------------------------
+// 世界实体（投掷物/掉落武器）的发现与缓存
+// ----------------------------------------------------------------------------
+// refreshWorldEntityCache：扫描实体列表里编号在"世界实体范围"的实体，
+// 按类名（如 smokegrenade_projectile、weapon_c4）判断类型，
+// 缓存"要显示"的那些。C4 掉落（没人携带）时还会记下位置。
 namespace
 {
+    // 把新发现的世界实体列表发布成快照（供渲染/雷达用）
     void publishWorldEntities(
         std::vector<WorldEntityInfo>&& entities)
     {
@@ -814,21 +891,25 @@ namespace
                 displayName = "C4";
             }
             if (config.grenadeESP) {
-                if (name == "smokegrenade_projectile") {
+                // 用子串匹配，兼容热修对 designer name 的命名变化（前缀/后缀/下划线）。
+                const auto hasKw = [&name](const char* kw) {
+                    return name.find(kw) != std::string::npos;
+                };
+                if (hasKw("smokegrenade") || hasKw("smoke")) {
                     type = 0;
-                    displayName = "Smoke";
-                } else if (name == "flashbang_projectile") {
+                    displayName = "烟雾";
+                } else if (hasKw("flashbang") || hasKw("flash")) {
                     type = 1;
-                    displayName = "Flash";
-                } else if (name == "hegrenade_projectile") {
+                    displayName = "闪光";
+                } else if (hasKw("hegrenade") || hasKw("he_grenade") || hasKw("grenade")) {
                     type = 2;
-                    displayName = "HE";
-                } else if (name == "molotov_projectile") {
+                    displayName = "手雷";
+                } else if (hasKw("molotov") || hasKw("inferno")) {
                     type = 3;
-                    displayName = "Molotov";
-                } else if (name == "decoy_projectile") {
+                    displayName = "燃烧瓶";
+                } else if (hasKw("decoy")) {
                     type = 4;
-                    displayName = "Decoy";
+                    displayName = "诱饵";
                 }
             }
 
@@ -854,6 +935,9 @@ namespace
         cachedWorldEntities = std::move(refreshed);
     }
 
+    // ------------------------------------------------------------------
+    // 世界实体位置刷新：给缓存的世界实体读位置并发布
+    // ------------------------------------------------------------------
     void updateWorldEntityPositions()
     {
         std::vector<WorldEntityInfo> positioned;
@@ -932,6 +1016,12 @@ namespace
         publishBombInfo(BombInfo{});
     }
 
+    // ------------------------------------------------------------------
+    // updateBombInfo：读 C4 炸弹状态
+    // ------------------------------------------------------------------
+    // 从全局偏移 dwPlantedC4 找到已安放的 C4 实体，读：
+    // 是否在倒计时、爆炸时间、安放点(A/B)、是否正在拆除/已拆/已爆、位置。
+    // 时间值都做合理性校验（见 timesValid），防止读到脏数据画出离谱倒计时。
     void updateBombInfo()
     {
         uintptr_t globalVars = 0;
@@ -1085,6 +1175,17 @@ namespace
     }
 }
 
+// ----------------------------------------------------------------------------
+// esp::updateEntities：数据线程每帧调用的"主采样函数"
+// ----------------------------------------------------------------------------
+// 流程：
+//   1. 读本地玩家数据（位置、视角矩阵、队伍…），任一项失败就记录失败并跳过
+//      （防止在换图/断线时发布半截数据）；
+//   2. 缓存本地玩家信息给瞄准/扳机用；可选地执行"防闪光"写内存；
+//   3. 周期性刷新玩家缓存（慢变数据：名字、武器、SteamID…）；
+//   4. 快路径：只读高频字段（位置、血量、骨骼、朝向）生成敌人列表；
+//   5. 到点就生成完整 GameSnapshot（雷达快照），供网页雷达/中继/录制使用；
+//   6. 刷新世界实体（投掷物/武器）和炸弹信息。
 void esp::updateEntities(const menu::RuntimeConfig& config)
 {
     uintptr_t localPlayerPawn = memory::Read<uintptr_t>(modBase + cs2_dumper::offsets::client_dll::dwLocalPlayerPawn);
@@ -1161,6 +1262,115 @@ void esp::updateEntities(const menu::RuntimeConfig& config)
         localPlayer.isValid = true;
         player_position = eyePos;
         player_yaw = localEyeAngles.y;
+    }
+
+    // Recoil-control data (RCS 压枪 + 魔法子弹共用)：当前后座视角偏移 + 开火计数。
+    // 只有在相关功能开启时才读，避免给采样循环加无谓的内存读取。
+    // 后座视角偏移在 CPlayer_CameraServices（本地玩家 pawn 指过去）里，
+    // 单位是弧度；RCS 那边再换算成角度。
+    vec3 viewPunch{};
+    vec3 aimPunch{};
+    float sensitivity = 0.0f;
+    int32_t shotsFired = 0;
+    if (config.rcsEnabled ||
+        (config.aimbotEnabled && config.aimbotMode == 1)) {
+        memory::TryRead<int32_t>(
+            localPlayerPawn +
+                cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_iShotsFired,
+            shotsFired);
+        // 真实游戏灵敏度：压枪"像素/角度"换算直接从游戏数据读，无需手调。
+        // 经典换算：像素/度 = 1 / (灵敏度 × m_yaw)，m_yaw 默认 0.022。
+        memory::TryRead<float>(
+            localPlayerPawn +
+                cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_flMouseSensitivity,
+            sensitivity);
+        // 后座视角偏移（视觉）：相机用
+        uintptr_t cameraServices = 0;
+        if (memory::TryRead<uintptr_t>(
+                localPlayerPawn +
+                    cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_pCameraServices,
+                cameraServices) &&
+            cameraServices) {
+            memory::TryRead<vec3>(
+                cameraServices +
+                    cs2_dumper::schemas::client_dll::CPlayer_CameraServices::m_vecCsViewPunchAngle,
+                viewPunch);
+        }
+        // 预测射击偏移（真实弹道）：压枪/魔法子弹用
+        uintptr_t aimPunchServices = 0;
+        if (memory::TryRead<uintptr_t>(
+                localPlayerPawn +
+                    cs2_dumper::schemas::client_dll::C_CSPlayerPawn::m_pAimPunchServices,
+                aimPunchServices) &&
+            aimPunchServices) {
+            memory::TryRead<vec3>(
+                aimPunchServices +
+                    cs2_dumper::schemas::client_dll::CCSPlayer_AimPunchServices::m_predictableBaseAngle,
+                aimPunch);
+        }
+        // 当前武器后坐/动态准星数据（诊断用）：m_pWeaponServices → m_hActiveWeapon → 武器实体
+        int32_t weaponRecoilIndex = 0;
+        float weaponRecoilIndexF = 0.0f;
+        float crosshairDistance = 0.0f;
+        int32_t localWeaponIndex = 0;
+        uintptr_t weaponServices = 0;
+        if (memory::TryRead<uintptr_t>(
+                localPlayerPawn +
+                    cs2_dumper::schemas::client_dll::C_BasePlayerPawn::m_pWeaponServices,
+                weaponServices) &&
+            weaponServices) {
+            uint32_t activeWeaponHandle = 0;
+            if (memory::TryRead<uint32_t>(
+                    weaponServices +
+                        cs2_dumper::schemas::client_dll::CPlayer_WeaponServices::m_hActiveWeapon,
+                    activeWeaponHandle) &&
+                activeWeaponHandle &&
+                activeWeaponHandle != 0xFFFFFFFF) {
+                const uintptr_t entityListValue = memory::Read<uintptr_t>(
+                    modBase + cs2_dumper::offsets::client_dll::dwEntityList);
+                if (entityListValue) {
+                    const uintptr_t weaponEntity = entityAddress(
+                        entityListValue,
+                        activeWeaponHandle & game_layout::ENTITY_HANDLE_MASK);
+                    if (weaponEntity) {
+                    memory::TryRead<int32_t>(
+                        weaponEntity +
+                            cs2_dumper::schemas::client_dll::C_CSWeaponBase::m_iRecoilIndex,
+                        weaponRecoilIndex);
+                    memory::TryRead<float>(
+                        weaponEntity +
+                            cs2_dumper::schemas::client_dll::C_CSWeaponBase::m_flRecoilIndex,
+                        weaponRecoilIndexF);
+                    // 注：m_flCrosshairDistance 已被游戏移除（14186 起 schema 无此字段），
+                    // 该值仅作诊断，跨版本会有变动，故不再读取。
+                    // 武器定义索引（录制/回放弹道模式的键）：属性管理器 → 物品 → 定义索引
+                    uint16_t weaponIndex = 0;
+                    const uintptr_t itemView =
+                        weaponEntity +
+                        cs2_dumper::schemas::client_dll::C_EconEntity::m_AttributeManager +
+                        cs2_dumper::schemas::client_dll::C_AttributeContainer::m_Item;
+                    memory::TryRead<uint16_t>(
+                        itemView +
+                            cs2_dumper::schemas::client_dll::C_EconItemView::m_iItemDefinitionIndex,
+                        weaponIndex);
+                    if (weaponIndex != 0) {
+                        localWeaponIndex = weaponIndex;
+                    }
+                }
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            localPlayer.viewPunch = viewPunch;
+            localPlayer.aimPunch = aimPunch;
+            localPlayer.mouseSensitivity = sensitivity;
+            localPlayer.weaponIndex = localWeaponIndex;
+            localPlayer.weaponRecoilIndex = weaponRecoilIndex;
+            localPlayer.weaponRecoilIndexF = weaponRecoilIndexF;
+            localPlayer.crosshairDistance = crosshairDistance;
+            localPlayer.shotsFired = shotsFired;
+        }
+    }
     }
 
     // Anti-flash: zero out flash duration on local player
@@ -1594,10 +1804,9 @@ void esp::updateEntities(const menu::RuntimeConfig& config)
                             headToFeet > 10.0 &&
                             headToFeet < 200.0;
                         enemy.hasBones = bonesValid;
-                        if (bonesValid) {
-                            enemy.headPosition =
-                                enemy.bonePositions[BoneIndex::HEAD];
-                        }
+                        // 头部命中点保持用"脚 + 视线偏移"的可靠估算，不覆盖成可能
+                        // 偶发错位的骨骼数据（骨骼按步长对齐，个别敌人会读到错位，
+                        // 导致"选了头却打脚"）。骨骼仍用于骨架绘制与其它部位。                       
                     }
                 }
             }
@@ -1754,9 +1963,36 @@ void esp::updateEntities(const menu::RuntimeConfig& config)
     }
 }
 
+// ----------------------------------------------------------------------------
+// esp::render：渲染 ESP（画敌人方框/血条/骨骼等，渲染线程每帧调用）
+// ----------------------------------------------------------------------------
+// 用 ImGui 的绘图列表在覆盖层上画。每个敌人：
+//   - 投影身体位置到屏幕 → 画方框（颜色按 spotted 状态区分）；
+//   - 画血条、距离、武器名；
+//   - 按配置画骨骼连线、视角指示（朝向颜色）、闪光状态标记；
+//   - 投掷物/掉落武器也投影显示。
+// 所有数据都来自 enemies/worldEntities 快照，本函数不读游戏内存。
 void esp::render()
 {
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+
+    // 弹道录制/压枪状态提示（顶部居中，短暂显示几秒）
+    {
+        std::string statusText;
+        if (aimbot::getRcsStatus(statusText)) {
+            const float scale = overlayScale();
+            const ImVec2 textSize = ImGui::CalcTextSize(statusText.c_str());
+            const float sx =
+                static_cast<float>(VIEWPORT_X) +
+                VIEWPORT_W / 2.0f - textSize.x / 2.0f;
+            const float sy =
+                static_cast<float>(VIEWPORT_Y) + 18.0f * scale;
+            drawList->AddText(
+                ImVec2(sx, sy),
+                IM_COL32(255, 200, 80, 255),
+                statusText.c_str());
+        }
+    }
 
     // Take a snapshot of shared data under lock
     EnemySnapshot snapEnemies;
@@ -2059,7 +2295,7 @@ void esp::render()
             if (menu::espViewAngleText &&
                 enemy.viewAngleKnown) {
                 char angleText[16];
-                snprintf(angleText, sizeof(angleText), "%.0f deg", enemy.angleToPlayer);
+                snprintf(angleText, sizeof(angleText), "%.0f°", enemy.angleToPlayer);
                 ImVec2 angleTextSize = ImGui::CalcTextSize(angleText);
                 drawList->AddText(
                     ImVec2(
@@ -2076,7 +2312,7 @@ void esp::render()
         // Draw distance text using ImGui
         if (menu::espDistance) {
             char distText[32];
-            snprintf(distText, sizeof(distText), "%.0fm", enemy.distance / 100.0f);
+            snprintf(distText, sizeof(distText), "%.0f 米", enemy.distance / 100.0f);
 
             uint8_t dr = static_cast<uint8_t>(menu::espDistanceColor[0] * 255);
             uint8_t dg = static_cast<uint8_t>(menu::espDistanceColor[1] * 255);
@@ -2274,6 +2510,9 @@ void esp::render()
     // Bomb timer display (moved to renderBombTimer)
 }
 
+// ----------------------------------------------------------------------------
+// esp::renderBombTimer：画 C4 炸弹倒计时（屏幕上的 UI）
+// ----------------------------------------------------------------------------
 void esp::renderBombTimer()
 {
     BombInfo snapBomb;
@@ -2310,7 +2549,7 @@ void esp::renderBombTimer()
 
     const char* site = snapBomb.bombSite == 0 ? "A" : "B";
     char bombText[64];
-    snprintf(bombText, sizeof(bombText), "BOMB [%s]: %.1fs", site, timeLeft);
+    snprintf(bombText, sizeof(bombText), "炸弹[%s]：%.1f 秒", site, timeLeft);
 
     ImU32 bombColor;
     if (timeLeft <= 5.0f)
@@ -2336,7 +2575,7 @@ void esp::renderBombTimer()
         if (defuseLeft < 0.0f) defuseLeft = 0.0f;
 
         char defuseText[64];
-        snprintf(defuseText, sizeof(defuseText), "DEFUSING: %.1fs", defuseLeft);
+        snprintf(defuseText, sizeof(defuseText), "拆除中：%.1f 秒", defuseLeft);
 
         ImU32 defuseColor;
         if (defuseLeft < timeLeft)
@@ -2356,6 +2595,40 @@ void esp::renderBombTimer()
     }
 }
 
+// ----------------------------------------------------------------------------
+// esp::w2s（World to Screen）：把 3D 世界坐标投影到 2D 屏幕坐标
+// ----------------------------------------------------------------------------
+// 🎓 概念卡 ⑲：矩阵与向量数学（4x4 矩阵如何把 3D 投影到 2D）
+// ----------------------------------------------------------------------------
+// 【是什么】把 3D 世界里的一个点（x,y,z）变成屏幕上显示的位置（屏幕 x,y）：
+//   1. 视图矩阵（4x4）同时编码了"相机在哪、往哪看、焦距多少"；
+//   2. 点 (x,y,z,1) 乘以矩阵 → 得到"相机空间"里的坐标 (cx,cy,cz,cw)；
+//   3. 透视除法：屏幕x = cx/cw，屏幕y = cy/cw——物体越远（cw 越大）越靠近
+//      屏幕中心，这就是"近大远小"的数学来源；
+//   4. 再按屏幕宽高映射成像素坐标。
+// 这就是游戏和 3D 引擎的基础（游戏自己也用同样的数学画画面——我们只是
+// 借用游戏已经算好的矩阵再做一遍）。
+//
+// 【为什么在这里】ESP 要把敌人的 3D 坐标画到屏幕上的框里，必须做这次投影。
+// 返回 false 表示目标在相机背后/投影失败，不能画（会画出奇怪的东西）。
+//
+// 【最小示例（理解向量 × 矩阵，不要求会手写）】
+//   // 4x4 矩阵其实就是 16 个 float 排成 4 行 4 列
+//   float m[16];   // 视图矩阵（游戏内存里现成的）
+//   // w2s 内部做的事（简化）：
+//   //   cx = x*m[0] + y*m[4] + z*m[8]  + m[12];   // 行向量 × 矩阵
+//   //   cy = x*m[1] + y*m[5] + z*m[9]  + m[13];
+//   //   cz = x*m[2] + y*m[6] + z*m[10] + m[14];
+//   //   cw = x*m[3] + y*m[7] + z*m[11] + m[15];
+//   //   screen_x = cx / cw;   // 透视除法（核心一步）
+//
+// 【自己动手要点】
+// 1) 先理解"矩阵 = 一次变换"，别急着背公式；想看实际代码就搜 w2s 的实现；
+// 2) 记住判断"在背后"的条件：cw（透视分量）<= 0 就返回 false；
+// 3) 动手练习：把 w2s 抄出来，输入 (0,0,0) 试试输出是不是屏幕中心。
+// ----------------------------------------------------------------------------
+// 用视图矩阵（4x4）做投影变换。返回 false 表示目标在相机背后/投影失败，
+// 这时不能画它。这是 ESP 画框的最核心数学。
 bool esp::w2s(const vec3& world, vec2& screen, float m[16])
 {
     vec4 clipCoords;
@@ -2405,6 +2678,7 @@ bool esp::w2s(const vec3& world, vec2& screen, float m[16])
             static_cast<float>(VIEWPORT_H) + maxY;
 }
 
+// 两点之间距离（游戏单位）
 double esp::player_distance(const vec3& a, const vec3& b)
 {
     return std::sqrt(
@@ -2415,6 +2689,7 @@ double esp::player_distance(const vec3& a, const vec3& b)
 }
 
 // Normalize angle to -180 to 180 range
+// 角度归一化到 [-180, 180]（角度可能因为累加超过 ±180，必须折回来）
 float esp::normalizeAngle(float angle)
 {
     while (angle > 180.0f) angle -= 360.0f;

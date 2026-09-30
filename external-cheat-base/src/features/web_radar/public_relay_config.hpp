@@ -1,3 +1,19 @@
+// ============================================================================
+// public_relay_config.hpp —— 公网中继（Public Relay）的配置与校验
+//
+// 【这个文件是干什么的】
+// 1. 定义中继连接需要的配置（服务器 URL、房间名、producer token、超时…）；
+// 2. 提供严格的 URL 解析（只允许 wss://、拒绝用户信息/查询串/片段）；
+// 3. 提供配置校验函数（房间名、token、超时范围、快照大小上限…）；
+// 4. 提供连接失败后的指数退避算法（1s、2s、4s…30s 封顶，带抖动）。
+//
+// 【为什么校验这么严？】
+// - 只允许 wss://（加密的 WebSocket）：明文 ws:// 会把雷达数据裸奔在网络上；
+// - 拒绝 URL 里带用户名/密码（userinfo）：防止凭据被意外拼进 URL 或日志；
+// - 拒绝查询串/片段：防止 token 出现在访问日志里。
+// 这些校验同时用在界面测试和 Windows 传输层，保证两边行为一致。
+// ============================================================================
+
 #pragma once
 
 #include <algorithm>
@@ -12,53 +28,56 @@
 
 namespace web_radar
 {
+    // 解析后的中继端点（host + 端口 + 路径）
     struct PublicRelayEndpoint
     {
-        std::string host;
-        std::uint16_t port = 443;
-        std::string path = "/";
+        std::string host;           // 服务器主机名
+        std::uint16_t port = 443;   // 端口（默认 443 = HTTPS/WSS）
+        std::string path = "/";     // 路径
     };
 
+    // 中继配置（连接参数 + 超时 + 大小上限）
     struct PublicRelayConfig
     {
-        // This is the producer WebSocket endpoint, normally
-        // wss://radar.example.com/api/v1/publish. Plain ws:// is never
-        // accepted and WinHTTP's normal certificate validation is mandatory.
+        // producer 的 WebSocket 端点，通常是
+        // wss://radar.example.com/api/v1/publish。
+        // 明文 ws:// 永远不会被接受，且必须通过 WinHTTP 的证书校验。
         std::string endpointUrl;
-        std::string room;
-        std::string token;
+        std::string room;           // 房间名（把不同的比赛隔离开）
+        std::string token;          // producer token（推流专用凭证）
 
-        std::uint32_t resolveTimeoutMilliseconds = 5000;
-        std::uint32_t connectTimeoutMilliseconds = 5000;
-        std::uint32_t sendTimeoutMilliseconds = 5000;
-        std::uint32_t receiveTimeoutMilliseconds = 5000;
+        std::uint32_t resolveTimeoutMilliseconds = 5000;  // DNS 解析超时
+        std::uint32_t connectTimeoutMilliseconds = 5000;  // 建连超时
+        std::uint32_t sendTimeoutMilliseconds = 5000;     // 发送超时
+        std::uint32_t receiveTimeoutMilliseconds = 5000;  // 接收超时
 
-        // These defaults mirror the production Relay. Keeping both limits
-        // explicit prevents a stale or unexpectedly large snapshot from
-        // turning a weak connection into a reconnect loop. Deployments that
-        // deliberately tune the Relay may tune the producer to match.
-        std::uint32_t maxSnapshotBytes = 512U * 1024U;
-        std::uint32_t maximumQueuedSnapshotAgeMilliseconds = 5000;
+        // 这些默认值和生产环境 Relay 一致。把两个上限都写清楚，
+        // 防止一个过期或异常大的快照把弱网变成"反复重连"。
+        // 部署方如果故意调过 Relay 的参数，可以同步调整 producer。
+        std::uint32_t maxSnapshotBytes = 512U * 1024U;            // 单帧快照上限 512KB
+        std::uint32_t maximumQueuedSnapshotAgeMilliseconds = 5000; // 排队快照最大年龄
     };
 
+    // 中继连接的状态（菜单里显示用）
     enum class PublicRelayState : std::uint8_t
     {
-        disabled,
-        connecting,
-        connected,
-        backoff,
-        retiring,
-        failed
+        disabled,     // 未启用
+        connecting,   // 连接中
+        connected,    // 已连接
+        backoff,      // 退避等待重连
+        retiring,     // 正在收尾断开
+        failed        // 已失败
     };
 
+    // 中继的运行状态统计（菜单显示）
     struct PublicRelayStatus
     {
         PublicRelayState state = PublicRelayState::disabled;
-        std::uint64_t framesSent = 0;
-        std::uint64_t replacedFrames = 0;
-        std::uint64_t droppedFrames = 0;
-        std::uint64_t reconnects = 0;
-        std::string lastError;
+        std::uint64_t framesSent = 0;      // 已发送帧数
+        std::uint64_t replacedFrames = 0;  // 被新帧顶掉的旧帧数
+        std::uint64_t droppedFrames = 0;   // 被丢弃的帧数
+        std::uint64_t reconnects = 0;      // 重连次数
+        std::string lastError;             // 最近错误
     };
 
     namespace detail
@@ -149,9 +168,14 @@ namespace web_radar
         }
     }
 
-    // Strict, allocation-light URL parsing shared by the UI tests and the
-    // Windows transport. User info, query strings and fragments are rejected
-    // so credentials cannot accidentally migrate into a URL or access log.
+    // ------------------------------------------------------------------
+    // parsePublicRelayEndpoint：严格解析中继 URL（不分配额外内存）
+    // ------------------------------------------------------------------
+    // 支持普通域名（example.com:443）和 [IPv6] 地址。
+    // 规则：必须以 wss:// 开头；拒绝 userinfo、查询串、片段；
+    // 路径字符必须是可见 ASCII。解析失败时返回空并（可选）给出错误信息。
+    // 严格的、分配轻量的 URL 解析，由 UI 测试和 Windows 传输层共用。
+    // 用户信息、查询串和片段都会被拒绝，这样凭据不会意外迁移进 URL 或访问日志。
     [[nodiscard]] inline std::optional<PublicRelayEndpoint>
     parsePublicRelayEndpoint(
         const std::string_view url,
@@ -259,6 +283,11 @@ namespace web_radar
         return endpoint;
     }
 
+    // ------------------------------------------------------------------
+    // validatePublicRelayConfig：校验整份配置是否合法
+    // ------------------------------------------------------------------
+    // 依次检查：URL 可解析、房间名长度/字符集、token 长度/可见字符、
+    // 各超时范围、快照大小上限。任一不合法就返回错误字符串（空串 = 合法）。
     [[nodiscard]] inline std::string validatePublicRelayConfig(
         const PublicRelayConfig& config)
     {
@@ -340,9 +369,10 @@ namespace web_radar
         return connectedFor >= publicRelayHealthyConnectionDuration;
     }
 
-    // Exponential retry: 1, 2, 4, 8, 16 and 30 seconds, with deterministic
-    // +/-20% jitter. The entropy input makes the pure function easy to test;
-    // production supplies a fresh pseudo-random value for each failure.
+    // 指数退避重连：1、2、4、8、16、30 秒封顶，外加确定性的 ±20% 抖动。
+    // 抖动用传入的 entropy 计算，让纯函数容易测试；生产环境每次失败
+    // 都传一个新随机值。作用是：多台机器同时断线重连时不会"齐步走"
+    // 撞在一起（惊群效应）。
     [[nodiscard]] inline std::chrono::milliseconds publicRelayBackoffDelay(
         const std::uint32_t failureCount,
         const std::uint32_t entropy) noexcept
