@@ -252,3 +252,24 @@ jobs:
           --target "${{ inputs.source_sha || github.sha }}" `
           --title "Release $tag (SDL2 + ImGui)" `
           --generate-notes
+
+        # 在自动生成的说明前插入来源声明：本仓库是对原作者项目的本地修改副本。
+        # Prepend the attribution notice so every automatic release states its origin.
+        $attribution = @"
+        > ## ⚠️ 来源声明 / ATTRIBUTION
+        > **本发行版是对原作者项目的本地修改版本，不是原创项目。**
+        > **This release is a LOCALLY MODIFIED build — NOT original work.**
+        >
+        > - 原作者 / Original author: **tiansongyu** — https://github.com/tiansongyu
+        > - 原仓库 / Original repository: **https://github.com/tiansongyu/cs2_cheat**
+        > - 偏移量来源 / Offsets source: **https://github.com/a2x/cs2-dumper**
+        >
+        > 全部原始代码、设计、文档与版权均归原作者所有。
+        > All original code, design, documentation and licensing belong to the original authors.
+
+        ---
+
+        "@
+        $existing = gh release view $tag --json body --jq .body
+        Set-Content -Path release-notes.md -Value ($attribution + $existing) -Encoding utf8
+        gh release edit $tag --notes-file release-notes.md

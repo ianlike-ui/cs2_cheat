@@ -41,8 +41,14 @@
 
 ### 第 1 步：下载发行包
 
-前往 **[Releases](https://github.com/ianlike-ui/cs2_cheat/releases/latest)** 下载 `cs2_cheat-vX.Y.Z-win64.zip`。
-当前最新为 **[v1.0.14190](https://github.com/ianlike-ui/cs2_cheat/releases/tag/v1.0.14190)**（偏移量对应 **CS2 build 14190**）。
+打开 **[Releases](https://github.com/ianlike-ui/cs2_cheat/releases)** 页面，下载**最新**那个发行版里的压缩包。你会看到两种文件名，**任选一个**都能用：
+
+| 资产名 | 说明 |
+| --- | --- |
+| `Release-Binaries.zip` | **CI 自动构建**的发行包：每次 `main` 构建成功自动发布，并已通过发布布局完整性校验 |
+| `cs2_cheat-vX.Y.Z-win64.zip` | 手工打包版，包内额外附带 `来源声明-ATTRIBUTION.txt` |
+
+两个包内的偏移量都对应 **CS2 build 14190**。
 
 ### 第 2 步：解压（**不要只把 exe 拖出来**）
 

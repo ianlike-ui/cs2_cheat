@@ -38,8 +38,14 @@ An educational CS2 external ESP project built with SDL2, Dear ImGui, and C++20. 
 
 ### Step 1 — Download
 
-Get `cs2_cheat-vX.Y.Z-win64.zip` from **[Releases](https://github.com/ianlike-ui/cs2_cheat/releases/latest)**.
-Latest: **[v1.0.14190](https://github.com/ianlike-ui/cs2_cheat/releases/tag/v1.0.14190)** (offsets for **CS2 build 14190**).
+Open the **[Releases](https://github.com/ianlike-ui/cs2_cheat/releases)** page and download the archive from the **newest** release. Two file names exist and **either one works**:
+
+| Asset | Notes |
+| --- | --- |
+| `Release-Binaries.zip` | Built automatically by **CI** on every successful `main` build; its release layout is verified |
+| `cs2_cheat-vX.Y.Z-win64.zip` | Manually packaged; additionally contains `来源声明-ATTRIBUTION.txt` |
+
+Both ship offsets for **CS2 build 14190**.
 
 ### Step 2 — Extract (do **not** drag out the exe alone)
 
