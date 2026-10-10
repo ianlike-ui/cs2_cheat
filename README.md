@@ -19,9 +19,10 @@
 
 ---
 
-[![Build](https://github.com/tiansongyu/cs2_cheat/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/tiansongyu/cs2_cheat/actions/workflows/build.yaml)
-[![Offsets](https://github.com/tiansongyu/cs2_cheat/actions/workflows/update-files.yml/badge.svg?branch=main)](https://github.com/tiansongyu/cs2_cheat/actions/workflows/update-files.yml)
-[![License](https://img.shields.io/github/license/tiansongyu/cs2_cheat)](LICENSE)
+[![Build](https://github.com/ianlike-ui/cs2_cheat/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/ianlike-ui/cs2_cheat/actions/workflows/build.yaml)
+[![Offsets](https://github.com/ianlike-ui/cs2_cheat/actions/workflows/update-files.yml/badge.svg?branch=main)](https://github.com/ianlike-ui/cs2_cheat/actions/workflows/update-files.yml)
+[![Release](https://img.shields.io/github/v/release/ianlike-ui/cs2_cheat?display_name=tag&sort=semver)](https://github.com/ianlike-ui/cs2_cheat/releases/latest)
+[![License](https://img.shields.io/github/license/ianlike-ui/cs2_cheat)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
 ![C++](https://img.shields.io/badge/C%2B%2B-20-00599C)
 
@@ -31,6 +32,103 @@
 
 > [!WARNING]
 > 本项目仅用于逆向工程和图形渲染学习。仅可在使用 `-insecure` 启动的离线环境中运行，禁止用于 VAC 服务器或任何在线游戏。使用者须自行承担不当使用造成的风险。
+
+## 🚀 新手开箱即用教程
+
+> **不用编译、不用装 Visual Studio。** 下载 → 解压 → 游戏加一个启动参数 → 双击 exe → 按 `F4`，五分钟可用。
+>
+> **[⬇️ 点此下载最新发行版](../../releases/latest)**
+
+### 第 1 步：下载发行包
+
+前往 **[Releases](https://github.com/ianlike-ui/cs2_cheat/releases/latest)** 下载 `cs2_cheat-vX.Y.Z-win64.zip`。
+当前最新为 **[v1.0.14190](https://github.com/ianlike-ui/cs2_cheat/releases/tag/v1.0.14190)**（偏移量对应 **CS2 build 14190**）。
+
+### 第 2 步：解压（**不要只把 exe 拖出来**）
+
+解压到任意文件夹，例如 `D:\cs2esp\`，并保持这个结构：
+
+```text
+D:\cs2esp\
+├─ external-cheat-base.exe     ← 主程序
+├─ SDL2.dll                    ← 必须与 exe 同一层，否则双击报缺 DLL
+├─ web-radar\dist\...          ← 网页雷达资源，不要删
+├─ CIVETWEB-LICENSE.md
+├─ LICENSE
+└─ 来源声明-ATTRIBUTION.txt
+```
+
+> ❗ 最常见的错误：只把 `external-cheat-base.exe` 拖到桌面 → 启动时报找不到 `SDL2.dll`。
+
+### 第 3 步：给 CS2 加 `-insecure` 启动参数
+
+1. 打开 **Steam → 库**，右键 **Counter-Strike 2** → **属性**
+2. 切到 **通用** 页，在 **启动选项** 里填入：`-insecure`
+3. 关闭属性窗口，正常启动 CS2
+4. 进入 **离线 / 与机器人对战** 的房间里（**不要**连 VAC 服务器，**不要**打官方匹配）
+
+建议把游戏设为 **全屏窗口化（Windowed Fullscreen）**：覆盖层只支持完整位于单个显示器内的窗口，独占全屏不受支持。
+
+### 第 4 步：启动程序
+
+双击 `external-cheat-base.exe`。更稳妥的做法是**右键 → 以管理员身份运行**（读取游戏内存需要权限；程序本身也会请求提权）。
+
+首次运行可能被 Windows SmartScreen 或杀毒软件拦截——这是"未签名的外部读内存程序"的通病，选择"仍要运行"或自行加入白名单。
+
+### 第 5 步：打开菜单
+
+游戏里按 **`F4`** 打开 / 隐藏设置菜单。**ESP 默认已开启**（方框、骨骼、血条、距离等），直接就能看到效果。
+按 **`F9`** 退出程序。
+
+### 默认热键总表（开箱即用）
+
+| 按键 | 作用 |
+| --- | --- |
+| `F4` | 打开 / 隐藏菜单 |
+| `F9` | 退出程序 |
+| `Shift` | 自动瞄准（按住，需先启用自瞄） |
+| `F` | 自动扳机（按住，需先启用） |
+| `F6` | 后坐力录制 |
+| `F7` | 自动压枪 开 / 关 |
+| `F8` | 自动急停 开 / 关 |
+| `F10` | 自动旋转（模型自转，他人可见）开 / 关 |
+| `F11` | 瞬移 开 / 关 |
+| `F12` | 自瞄模式切换（鼠标自瞄 ↔ 魔法子弹） |
+| `Insert` | 开火弹道偏移 开 / 关 |
+| `Home` | 循环命中部位（头 / 脖 / 胸 / 腹 / 双臂 / 双腿） |
+| `End` | 循环智能瞄准优先级 |
+| `PageUp` | 循环视口模式 |
+
+所有热键都能在对应功能面板里改，**允许重复绑定**；同一个键绑了多个功能时菜单会给出黄色提示（不阻止你使用）。
+
+### 想用"写内存"类功能？再加一个参数
+
+魔法子弹、瞬移、自动旋转、防闪光等功能需要写游戏内存，**默认关闭**，必须显式允许：
+
+```powershell
+.\external-cheat-base.exe --allow-memory-writes
+```
+
+### 出问题先看这里
+
+| 现象 | 原因 / 处理 |
+| --- | --- |
+| 双击没反应，或提示缺 `SDL2.dll` | `SDL2.dll` 没和 exe 放同一目录，或被杀毒软件隔离 |
+| 菜单按 `F4` 打不开、功能无效 | 没加 `-insecure`、没进离线对局，或权限不足（改用管理员运行） |
+| 覆盖层不显示 | 游戏是独占全屏，或窗口跨越多个显示器 → 改为全屏窗口化、单显示器 |
+| ESP 有框但位置、血量全不对 | 偏移量与你的游戏版本不匹配 → 见下方「版本不匹配怎么办」 |
+| 杀毒软件报警 | 未签名 + 读写其他进程内存，属外部工具通病；自行判断是否加白名单 |
+
+运行日志位于 `%TEMP%\cs2-esp.log`，出问题先看它。
+
+### 版本不匹配怎么办
+
+发行包里的偏移量对应 **CS2 build 14190**。CS2 每次更新都会改变内存布局，游戏更新后若 ESP 位置错乱、功能失效：
+
+1. 换个更新的发行包（本仓库或上游 [a2x/cs2-dumper](https://github.com/a2x/cs2-dumper) 出对应版本后）；
+2. 或者自己 dump 当前版本并重新编译——见下方「构建」章节。
+
+---
 
 ## 学习资料
 
@@ -66,19 +164,11 @@
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/tiansongyu/cs2_cheat/releases/latest) 下载并解压最新版本。
-2. 使用 `-insecure` 参数启动 CS2，并进入离线模式。
-3. 运行 `external-cheat-base.exe`，接受 Windows 管理员权限提示。
-4. 按 `F4` 打开或隐藏设置菜单，按 `F9` 退出程序。
+完整的新手步骤见上文 **🚀 新手开箱即用教程**，一句话版本：
 
-| 按键 | 默认操作 |
-| --- | --- |
-| `F4` | 显示或隐藏菜单 |
-| `F9` | 退出程序 |
-| `Shift` | 自动瞄准（启用后） |
-| `F` | 自动扳机（启用后） |
+**解压保留完整目录 → CS2 加 `-insecure` 进离线局 → 管理员运行 `external-cheat-base.exe` → `F4` 开菜单、`F9` 退出。**
 
-Web Radar 和写内存的防闪光默认关闭。仅在明确进行离线测试时允许内存写入：
+Web Radar 与写内存类功能（魔法子弹、瞬移、自动旋转、防闪光）默认关闭，需要时显式允许内存写入：
 
 ```powershell
 .\external-cheat-base.exe --allow-memory-writes
