@@ -34,7 +34,7 @@ An educational CS2 external ESP project built with SDL2, Dear ImGui, and C++20. 
 
 > **No compiler, no Visual Studio required.** Download → extract → add one launch option → double-click the exe → press `F4`. Working in five minutes.
 >
-> **[⬇️ Download the latest release](../../releases/latest)**
+> **[⬇️ Download the latest release](https://github.com/ianlike-ui/cs2_cheat/releases/latest)**
 
 ### Step 1 — Download
 

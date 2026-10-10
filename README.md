@@ -37,7 +37,7 @@
 
 > **不用编译、不用装 Visual Studio。** 下载 → 解压 → 游戏加一个启动参数 → 双击 exe → 按 `F4`，五分钟可用。
 >
-> **[⬇️ 点此下载最新发行版](../../releases/latest)**
+> **[⬇️ 点此下载最新发行版](https://github.com/ianlike-ui/cs2_cheat/releases/latest)**
 
 ### 第 1 步：下载发行包
 
