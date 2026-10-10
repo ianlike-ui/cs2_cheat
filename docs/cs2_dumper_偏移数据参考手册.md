@@ -1,6 +1,6 @@
 # cs2-dumper 数据参考手册
 
-> 生成版本：CS2 build **14186**（上游 `a2x/cs2-dumper` 输出，2026-09-29）
+> 生成版本：CS2 build **14189**（上游 `a2x/cs2-dumper` 输出）
 > 用途：把 dumper 能拿到的每一类数据说清楚——代表什么、怎么访问、能用来干什么。
 > 原则：dumper 给的是**偏移**（"地图"），不是运行时数值（"宝物"）。下面每个偏移 = 模块基地址 + 偏移量，运行期用 `ReadProcessMemory` 取值。
 
@@ -27,40 +27,40 @@ cs2-dumper 在游戏运行时读一次内存，扒出五类静态数据：
 ### 玩家 / 实体
 | 偏移 | 值 | 含义 |
 |---|---|---|
-| `dwLocalPlayerPawn` | 0x25606D8 | **本地玩家实体**（pawn）。血、位置、视角、后座、骨骼全部从它往下读。 |
-| `dwLocalPlayerController` | 0x2537628 | 本地玩家控制器（名字、SteamID、金钱、装备）。 |
-| `dwEntityList` | 0x27151E8 | **实体表**。遍历所有玩家/实体的根（按索引取实体地址）。 |
-| `dwGameEntitySystem` | 0x27151E8 | 游戏实体系统（与 EntityList 同址）。 |
+| `dwLocalPlayerPawn` | 0x2562808 | **本地玩家实体**（pawn）。血、位置、视角、后座、骨骼全部从它往下读。 |
+| `dwLocalPlayerController` | 0x253A068 | 本地玩家控制器（名字、SteamID、金钱、装备）。 |
+| `dwEntityList` | 0x2717828 | **实体表**。遍历所有玩家/实体的根（按索引取实体地址）。 |
+| `dwGameEntitySystem` | 0x2717828 | 游戏实体系统（与 EntityList 同址）。 |
 | `dwGameEntitySystem_highestEntityIndex` | +0x2120 | 实体表最高索引（遍历边界）。 |
 
 ### 渲染 / 视角
 | 偏移 | 值 | 含义 |
 |---|---|---|
-| `dwViewMatrix` | 0x2565A20 | **视图矩阵**（16 float）。世界坐标 → 屏幕坐标投影（ESP 画框用）。 |
-| `dwViewRender` | 0x25662E0 | 视图渲染器。 |
-| `dwViewAngles` | 0x2576238 | **引擎视角角度**（引擎当前看向哪）。写它可能直接影响发给服务器的 usercmd 视角。 |
-| `dwGlowManager` | 0x255C8F0 | 发光（glow）管理器。 |
+| `dwViewMatrix` | 0x2567FA0 | **视图矩阵**（16 float）。世界坐标 → 屏幕坐标投影（ESP 画框用）。 |
+| `dwViewRender` | 0x2568968 | 视图渲染器。 |
+| `dwViewAngles` | 0x25787E8 | **引擎视角角度**（引擎当前看向哪）。写它可能直接影响发给服务器的 usercmd 视角。 |
+| `dwGlowManager` | 0x255EE60 | 发光（glow）管理器。 |
 
 ### 输入 / 灵敏度 / 预测（和压枪、瞄准强相关）
 | 偏移 | 值 | 含义 |
 |---|---|---|
-| `dwSensitivity` | 0x255C820 | 游戏内灵敏度对象。 |
+| `dwSensitivity` | 0x255F998 | 游戏内灵敏度对象。 |
 | `dwSensitivity_sensitivity` | +0x58 | **灵敏度数值**（float）。压枪"像素/角度"换算可直接从这读真实值。 |
-| `dwCSGOInput` | 0x2575BB0 | 输入系统（usercmd 队列所在）。 |
+| `dwCSGOInput` | 0x2578160 | 输入系统（usercmd 队列所在）。 |
 | `dwInputSystem` | 0x46BC0 | 底层输入系统。 |
-| `dwPrediction` | 0x25605E0 | 预测系统（客户端预测用）。 |
+| `dwPrediction` | 0x2562710 | 预测系统（客户端预测用）。 |
 
 ### 全局 / 网络 / 其他
 | 偏移 | 值 | 含义 |
 |---|---|---|
-| `dwGlobalVars` | 0x222BF88 | 全局变量（当前 tick、时间、帧率）。 |
-| `dwGameRules` | 0x255C8D8 | 游戏规则（回合状态等）。 |
-| `dwPlantedC4` | 0x24C9290 | 已安放的 C4。 |
-| `dwWeaponC4` | 0x24C4550 | C4 武器实体。 |
-| `dwBuildNumber` | 0x61D1E8 | 游戏版本号。 |
-| `dwNetworkGameClient` | 0x91B1C0 | 网络客户端；子偏移：`_clientTickCount`(0x398)、`_serverTickCount`/`_deltaTick`(0x24C)、`_signOnState`(0x230)、`_maxClients`(0x240)、`_localPlayer`(0xF8)、`_isBackgroundMap` |
-| `dwWindowHeight/Width` | 0x91F544 / 0x91F540 | 窗口尺寸（视口映射）。 |
-| `dwSoundSystem` / `dwGameTypes` | 0x535340 / 0x1B0FD0 | 声音系统 / 游戏类型。 |
+| `dwGlobalVars` | 0x222DE98 | 全局变量（当前 tick、时间、帧率）。 |
+| `dwGameRules` | 0x255EE50 | 游戏规则（回合状态等）。 |
+| `dwPlantedC4` | 0x24CA930 | 已安放的 C4。 |
+| `dwWeaponC4` | 0x24C6AF0 | C4 武器实体。 |
+| `dwBuildNumber` | 0x61CFE8 | 游戏版本号。 |
+| `dwNetworkGameClient` | 0x91AFC0 | 网络客户端；子偏移：`_clientTickCount`(0x398)、`_serverTickCount`/`_deltaTick`(0x24C)、`_signOnState`(0x230)、`_maxClients`(0x240)、`_localPlayer`(0xF8)、`_isBackgroundMap` |
+| `dwWindowHeight/Width` | 0x91F334 / 0x91F330 | 窗口尺寸（视口映射）。 |
+| `dwSoundSystem` / `dwGameTypes` | 0x535350 / 0x1B0FD0 | 声音系统 / 游戏类型。 |
 
 ---
 
