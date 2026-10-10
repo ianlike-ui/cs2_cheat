@@ -37,8 +37,10 @@ int main()
         RadarDemand{false, true, true, false, false, false}) == 10);
     assert(radarSamplingRate(
         RadarDemand{true, false, false, false, false, true}) == 20);
+    // 延迟敏感时元数据刷新间隔：33ms（≈30Hz）。曾为 100ms，为提高"敌人刚探出掩体
+    // 就尽快进入实体列表"的响应速度而下调；期望值随实现同步更新。
     assert(runtime_timing::metadataRefreshInterval(true) ==
-        std::chrono::milliseconds(100));
+        std::chrono::milliseconds(33));
     assert(runtime_timing::metadataRefreshInterval(false) ==
         std::chrono::milliseconds(250));
 
