@@ -17,7 +17,6 @@
 ---
 
 [![Build](https://github.com/ianlike-ui/cs2_cheat/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/ianlike-ui/cs2_cheat/actions/workflows/build.yaml)
-[![Offsets](https://github.com/ianlike-ui/cs2_cheat/actions/workflows/update-files.yml/badge.svg?branch=main)](https://github.com/ianlike-ui/cs2_cheat/actions/workflows/update-files.yml)
 [![Release](https://img.shields.io/github/v/release/ianlike-ui/cs2_cheat?display_name=tag&sort=semver)](https://github.com/ianlike-ui/cs2_cheat/releases/latest)
 [![License](https://img.shields.io/github/license/ianlike-ui/cs2_cheat)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
