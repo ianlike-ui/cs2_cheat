@@ -1,7 +1,10 @@
 name: Build CS2 ESP (SDL2 + ImGui)
 
 on:
-  # 由 update-files.yml 触发，或手动触发
+  # 自动构建已关闭（AUTOMATIC_BUILD_DISABLED）：
+  #   - 不再响应 push 到 main，因此代码合入/偏移提交都不会自动构建；
+  #   - 不再自动创建 GitHub Release（Release 步骤只在手动运行时生效）。
+  # 需要构建时，到 Actions 页面选中本工作流点击 "Run workflow" 手动触发即可。
   workflow_dispatch:
     inputs:
       force_build:
@@ -10,27 +13,10 @@ on:
         type: boolean
         default: true
       source_sha:
-        description: 'Exact commit to build (used by the offset updater)'
+        description: 'Exact commit to build (empty = current HEAD)'
         required: false
         type: string
         default: ''
-  # 当 push 到 main 分支时也触发（用于代码更新后的构建）
-  push:
-    branches: [ main ]
-    paths:
-      - 'external-cheat-base/**'
-      - 'tests/**'
-      - 'web-radar/**'
-      - 'radar-relay/**'
-      - 'deploy/public-relay/**'
-      - 'docs/public-radar-relay-design.md'
-      - 'vendor/civetweb/**'
-      - 'scripts/**'
-      - 'Dockerfile'
-      - '.dockerignore'
-      - 'LICENSE'
-      - '.github/workflows/build.yaml'
-      - '!external-cheat-base/generated/**'
 
 permissions:
   contents: write

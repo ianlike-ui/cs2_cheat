@@ -1,8 +1,11 @@
 name: Update CS2 Offset Files
 
 on:
-  schedule:
-    - cron: '0 * * * *'
+  # 自动运行已关闭（AUTOMATIC_BUILD_DISABLED）：不再每小时定时同步偏移。
+  # 原因：上游 a2x/cs2-dumper 的版本可能落后于本地实际游戏版本（例如上游 14189、
+  # 本地按实际运行的游戏 dump 出 14190），自动同步会用较旧的偏移覆盖正确的本地数据，
+  # 直接导致 ESP/自瞄全部错位。
+  # 需要同步时到 Actions 页面手动运行 "Update CS2 Offset Files"（可勾选 force_update）。
   workflow_dispatch:
     inputs:
       force_update:
@@ -102,18 +105,7 @@ jobs:
         echo "Unable to publish offset update after three attempts" >&2
         exit 1
 
-  trigger-build:
-    needs: update-files
-    if: needs.update-files.outputs.pushed == 'true'
-    runs-on: ubuntu-latest
-    steps:
-    - name: Trigger Build Workflow
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SOURCE_SHA: ${{ needs.update-files.outputs.published_sha }}
-      run: |
-        gh workflow run build.yaml \
-          --repo "${{ github.repository }}" \
-          --ref main \
-          -f force_build=true \
-          -f source_sha="$SOURCE_SHA"
+  # 自动构建已关闭（AUTOMATIC_BUILD_DISABLED）：
+  # 原先此处会在偏移更新成功后自动 dispatch build.yaml，现已移除。
+  # 偏移更新照常提交，但不会再触发构建、也不会再自动发布 Release。
+  # 需要构建时请到 Actions 页面手动运行 "Build CS2 ESP (SDL2 + ImGui)"。
